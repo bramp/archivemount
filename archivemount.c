@@ -23,6 +23,7 @@
 
 #include "config.h"
 
+#include <assert.h>
 #include <fuse.h>
 #include <fuse_opt.h>
 #include <stdio.h>
@@ -44,7 +45,9 @@
 #include <wchar.h>
 #include <archive.h>
 #include <archive_entry.h>
+
 #include <pthread.h>
+#include <time.h>
 
 #include "uthash.h"
 
@@ -111,16 +114,16 @@ static struct fuse_opt ar_opts[] =
  /* globals */
 /***********/
 
-static int archiveFd; /* file descriptor of archive file, just to keep the
-			 beast alive in case somebody deletes the file while
-			 it is mounted */
-static int archiveModified = 0;
-static int archiveWriteable = 0;
-static NODE *root;
-struct options options;
-char *mtpt = NULL;
-char *archiveFile = NULL;
-pthread_mutex_t lock; /* global node tree lock */
+static NODE *root;                /* [g] root node                        */
+static int archiveFd;             /* [a] file descriptor of archive file. */
+static int archiveModified = 0;   /* [g] has this archived been modified? */
+static int archiveWriteable = 0;  /*     is this archived writable?       */
+struct options options;           /*     fuse options                     */
+char *mtpt = NULL;                /*     mount point                      */
+char *archiveFile = NULL;         /*     archive filename (that is open)  */
+
+pthread_mutex_t lock;   /* [g]lobal node tree lock */
+pthread_mutex_t fdLock; /* [a]rchiveFd lock */
 
 /* Taken from the GNU under the GPL */
 char *
@@ -972,37 +975,173 @@ save( const char *archiveFile )
 	return 0;
 }
 
+struct client_data {
+	pthread_mutex_t lock;    /* Lock must be held while using this archive */
+	struct archive *archive; /* The archive object */
+	const char * path;
+	long int compress_off;   /* Offset into compressed file */
+	long int uncompress_off; /* Offset into uncompressed (fake) file */
+
+	char buf[MAXBUF];
+};
+
+#define LOCK(lock) do { \
+	int ret; \
+	struct timespec abstime; \
+	clock_gettime(CLOCK_REALTIME, &abstime); \
+	abstime.tv_sec += 10; \
+	if ( (ret = pthread_mutex_timedlock(&lock, &abstime)) != 0 ) { \
+		log( "failed to get lock: %s\n", strerror(ret)); \
+		return -1; \
+	} \
+} while (0)
+
+#define UNLOCK(lock) do { \
+	pthread_mutex_unlock(&lock); \
+} while (0)
+
+
+/**
+ * libarchive calls this to request more data
+ * We assume this is called in a context where data is locked
+ */
+static __LA_SSIZE_T
+fd_read_callback(struct archive * archive, void * _data, const void **_buffer) {
+	int ret;
+	struct client_data * data = _data;
+
+	/* Ensure fd operations are serialised */
+	LOCK(fdLock);
+
+	ret = lseek(archiveFd, data->compress_off, SEEK_SET);
+	if (ret == -1) {
+		UNLOCK(fdLock);
+
+		log("fd_read_callback lseek failed: %s", strerror( errno ));
+		return -1;
+	}
+
+	ret = read(archiveFd, data->buf, MAXBUF); // 7%
+
+	UNLOCK(fdLock);
+
+	if (ret == -1) {
+		log("fd_read_callback read failed: %s", strerror( errno ));
+	} else {
+		*_buffer = data->buf;
+		data->compress_off += ret;
+	}
+
+	return ret;
+}
+
+/**
+ * libarchive calls this to skip data
+ * we assume this is called in a context where data is locked
+ */
+static off_t
+fd_skip_callback(struct archive * archive, void * _data, off_t request) {
+	struct client_data * data = _data;
+	data->compress_off += request; //11%
+	return request;
+}
+
+static int
+fd_close_callback(struct archive * archive, void * _data) {
+	return 0;
+}
+
+/**
+ * data must be locked
+ */
+static int
+open_archive(struct client_data *data) {
+
+	int ret;
+	struct archive_entry *entry;
+
+	/* search file in archive */
+	if( (data->archive = archive_read_new()) == NULL ) {
+		log( "Out of memory" );
+		return -ENOMEM;
+	}
+
+	ret = archive_read_support_compression_all( data->archive );
+	if( ret != ARCHIVE_OK ) {
+		log( "archive_read_support_compression_all(): %s (%d)\n",
+			archive_error_string( data->archive ), ret );
+		archive_read_finish( data->archive );
+		return -EIO;
+	}
+
+	ret = archive_read_support_format_all( data->archive );
+	if( ret != ARCHIVE_OK ) {
+		log( "archive_read_support_format_all(): %s (%d)\n",
+			archive_error_string( data->archive ), ret );
+		archive_read_finish( data->archive );
+		return -EIO;
+	}
+
+	ret = archive_read_open2( data->archive, data, NULL, fd_read_callback, fd_skip_callback, fd_close_callback );
+	if( ret != ARCHIVE_OK ) {
+		log( "archive_read_open2(): %s (%d)\n",
+			archive_error_string( data->archive ), ret );
+		archive_read_finish( data->archive );
+		return -EIO;
+	}
+
+	//realpath = archive_entry_pathname( node->entry );
+	/* search for file to read */
+	while( ( ret = archive_read_next_header( //22% (40%)
+			data->archive, &entry )) == ARCHIVE_OK ) { // 4%
+		const char *name;
+		name = archive_entry_pathname( entry ); //9% (15%)
+		if( strcmp( data->path, name ) == 0 ) { // 4%
+			return 0;
+		}
+		archive_read_data_skip( data->archive ); // 3% (33%)
+	}
+
+	/* We should not be able to get here */
+	assert(0);
+	return -EIO;
+}
 
   /*****************/
  /* API functions */
 /*****************/
 
 static int
-_ar_read( const char *path, char *buf, size_t size, off_t offset,
-		struct fuse_file_info *fi )
+_ar_open( const char *path, struct fuse_file_info *fi )
 {
-	int ret = -1;
-	const char *realpath;
 	NODE *node;
-	( void )fi;
+	int ret = 0;
 
-	//log( "read called, path: '%s'", path );
-	/* find node */
+	log( "ar_open path: '%s'", path );
+
 	node = get_node_for_path( root, path );
 	if( ! node ) {
+		log( "ar_open path: '%s' not found", path );
 		return -ENOENT;
 	}
+	if( (fi->flags & O_WRONLY) || (fi->flags & O_RDWR) ) {
+		if( ! archiveWriteable ) {
+			return -EROFS;
+		}
+	}
+
 	if( archive_entry_hardlink( node->entry ) ) {
 		/* file is a hardlink, recurse into it */
-		return _ar_read( archive_entry_hardlink( node->entry ),
-				buf, size, offset, fi );
+		return _ar_open( archive_entry_hardlink( node->entry ), fi );
 	}
 	if( archive_entry_symlink( node->entry ) ) {
 		/* file is a symlink, recurse into it */
-		return _ar_read( archive_entry_symlink( node->entry ),
-				buf, size, offset, fi );
+		return _ar_open( archive_entry_symlink( node->entry ), fi );
 	}
+
 	if( node->modified ) {
+		// TODO
+#if 0
 		/* the file is new or modified, read temporary file instead */
 		int fh;
 		fh = open( node->location, O_RDONLY );
@@ -1021,86 +1160,154 @@ _ar_read( const char *path, char *buf, size_t size, off_t offset,
 		}
 		/* clean up */
 		close( fh );
+#endif
 	} else {
-		struct archive *archive;
 		struct archive_entry *entry;
+		struct client_data *data;
 		int archive_ret;
-		/* search file in archive */
-		realpath = archive_entry_pathname( node->entry );
-		if( (archive = archive_read_new()) == NULL ) {
+		const char *realpath;
+
+		data = malloc(sizeof(struct client_data));
+		if (data == NULL) {
 			log( "Out of memory" );
 			return -ENOMEM;
 		}
-		archive_ret = archive_read_support_compression_all( archive );
-		if( archive_ret != ARCHIVE_OK ) {
-			log( "archive_read_support_compression_all(): %s (%d)\n",
-				archive_error_string( archive ), archive_ret );
-			return -EIO;
+		pthread_mutex_init(&data->lock, NULL);
+		data->path = archive_entry_pathname( node->entry );
+		data->compress_off   = 0;
+		data->uncompress_off = 0;
+
+		fi->fh = (uint64_t)data; // TODO Use tokens instead of pointer
+
+		ret = open_archive(data);
+		if (ret) {
+			free(data);
 		}
-		archive_ret = archive_read_support_format_all( archive );
-		if( archive_ret != ARCHIVE_OK ) {
-			log( "archive_read_support_format_all(): %s (%d)\n",
-				archive_error_string( archive ), archive_ret );
-			return -EIO;
+	}
+
+	return ret;
+}
+
+static int
+ar_open( const char *path, struct fuse_file_info *fi ) {
+	/*
+	int ret = pthread_mutex_lock(&lock);
+	if ( ret ) {
+		log( "failed to get lock: %s\n", strerror(ret));
+		return -EIO;
+	} else {
+		ret = _ar_open( path, fi );
+		pthread_mutex_unlock(&lock);
+	}
+	return ret;
+	*/
+	return _ar_open( path, fi );
+}
+
+/**
+ * Called by FUSE when a file handle is closed
+ */
+static int
+ar_release( const char *path, struct fuse_file_info *fi )
+{
+	struct client_data * data = (struct client_data *)fi->fh;
+	( void )path;
+
+	fi->fh = 0;
+
+	LOCK(data->lock);
+	archive_read_finish(data->archive);
+	UNLOCK(data->lock);
+
+	pthread_mutex_destroy(&data->lock);
+
+	free(data);
+	return 0;
+}
+
+/**
+ * Called with data locked
+ */
+static int
+_ar_read( const char *path, char *buf, size_t size, off_t offset,
+		struct fuse_file_info *fi )
+{
+	int ret = -1;
+	const char *realpath;
+	NODE *node;
+	struct client_data * data = (struct client_data *)fi->fh; // TODO
+
+	log( "ar_read path: '%s' offset: %d", path, offset );
+
+	if (offset < data->uncompress_off) {
+
+		log( "ar_read path: '%s' offset: %d uncompress_off: %d rollback", path, offset, data->uncompress_off );
+
+		/* Close the old archive, and read open
+		 * We need to do this because libarchive can't seek backwards */
+		archive_read_finish(data->archive);
+		data->compress_off   = 0;
+		data->uncompress_off = 0;
+
+		ret = open_archive(data);
+	}
+
+	if (offset > data->uncompress_off) {
+
+		log( "ar_read path: '%s' offset: %d forward", path, offset );
+
+		//log( "read called, path: '%s'", path );
+		void *trash;
+		if( ( trash = malloc( MAXBUF ) ) == NULL ) {
+			log( "Out of memory" );
+			return -ENOMEM;
 		}
-		archive_ret = archive_read_open_fd( archive, archiveFd, 10240 );
-		if( archive_ret != ARCHIVE_OK ) {
-			log( "archive_read_open_fd(): %s (%d)\n",
-				archive_error_string( archive ), archive_ret );
-			return -EIO;
-		}
-		/* search for file to read */
-		while( ( archive_ret = archive_read_next_header( 
-					archive, &entry )) == ARCHIVE_OK ) {
-			const char *name;
-			name = archive_entry_pathname( entry );
-			if( strcmp( realpath, name ) == 0 ) {
-				void *trash;
-				if( ( trash = malloc( MAXBUF ) ) == NULL ) {
-					log( "Out of memory" );
-					return -ENOMEM;
-				}
-				/* skip offset */
-				while( offset > 0 ) {
-					int skip = offset > MAXBUF ? MAXBUF : offset;
-					ret = archive_read_data(
-							archive, trash, skip );
-					if( ret == ARCHIVE_FATAL
-							|| ret == ARCHIVE_WARN
-							|| ret == ARCHIVE_RETRY )
-					{
-						log( "ar_read (skipping offset): %s",
-							archive_error_string( archive ) );
-						errno = archive_errno( archive );
-						ret = -1;
-						break;
-					}
-					offset -= skip;
-				}
-				free( trash );
-				if( offset ) {
-					/* there was an error */
-					break;
-				}
-				/* read data */
-				ret = archive_read_data( archive, buf, size );
-				if( ret == ARCHIVE_FATAL
-						|| ret == ARCHIVE_WARN
-						|| ret == ARCHIVE_RETRY )
-				{
-					log( "ar_read (reading data): %s",
-						archive_error_string( archive ) );
-					errno = archive_errno( archive );
-					ret = -1;
-				}
+
+		/* skip diff */
+		while( data->uncompress_off < offset ) {
+			int diff = offset - data->uncompress_off;
+			int skip = diff > MAXBUF ? MAXBUF : diff;
+			ret = archive_read_data(data->archive, trash, skip );
+			if( ret == ARCHIVE_FATAL
+					|| ret == ARCHIVE_WARN
+					|| ret == ARCHIVE_RETRY )
+			{
+				log( "ar_read (skipping offset): %s",
+					archive_error_string( data->archive ) );
+				errno = archive_errno( data->archive );
 				break;
 			}
-			archive_read_data_skip( archive );
+			data->uncompress_off += ret;
 		}
-		/* close archive */
-		archive_read_finish( archive );
-		lseek( archiveFd, 0, SEEK_SET );
+
+		free( trash );
+		if( data->uncompress_off != offset ) {
+			/* there was an error */
+			return -1;
+		}
+
+	} else /* data->uncompress_off == offset */ {
+		// Do nothing
 	}
+
+	assert(data->archive != NULL);
+	assert(data->uncompress_off == offset);
+
+	/* read data */
+	ret = archive_read_data( data->archive, buf, size );
+	if( ret == ARCHIVE_FATAL
+			|| ret == ARCHIVE_WARN
+			|| ret == ARCHIVE_RETRY )
+	{
+		log( "ar_read (reading data): %s",
+			archive_error_string( data->archive ) );
+		errno = archive_errno( data->archive );
+		ret = -1;
+
+	} else {
+		data->uncompress_off += ret;
+	}
+
 	return ret;
 }
 
@@ -1108,17 +1315,15 @@ static int
 ar_read( const char *path, char *buf, size_t size, off_t offset,
 		struct fuse_file_info *fi )
 {
-	int ret = pthread_mutex_lock(&lock);
-	if ( ret ) {
-		log( "failed to get lock: %s\n", strerror(ret));
-		return -EIO;
-	} else {
-		ret = _ar_read( path, buf, size, offset, fi );
-		pthread_mutex_unlock(&lock);
-	}
+	struct client_data * data = (struct client_data *)fi->fh; // TODO
+	int ret;
+
+	LOCK(data->lock);
+	ret = _ar_read(path, buf, size, offset, fi);
+	UNLOCK(data->lock);
+
 	return ret;
 }
-
 static int
 _ar_getattr( const char *path, struct stat *stbuf )
 {
@@ -2089,43 +2294,6 @@ ar_readlink( const char *path, char *buf, size_t size )
 }
 
 static int
-ar_open( const char *path, struct fuse_file_info *fi )
-{
-	NODE *node;
-
-	//log( "open called, path '%s'", path );
-	int ret = pthread_mutex_lock(&lock);
-	if ( ret ) {
-		fprintf(stderr, "could not acquire lock for archive: %s\n", strerror(ret));
-		return ret;
-	}
-	node = get_node_for_path( root, path );
-	if( ! node ) {
-		pthread_mutex_unlock( &lock );
-		return -ENOENT;
-	}
-	if( fi->flags & O_WRONLY || fi->flags & O_RDWR ) {
-		if( ! archiveWriteable ) {
-			pthread_mutex_unlock( &lock );
-			return -EROFS;
-		}
-	}
-	/* no need to recurse into links since function doesn't do anything */
-	/* no need to save a handle here since archives are stream based */
-	fi->fh = 0;
-	pthread_mutex_unlock( &lock );
-	return 0;
-}
-
-static int
-ar_release( const char *path, struct fuse_file_info *fi )
-{
-	( void )fi;
-	( void )path;
-	return 0;
-}
-
-static int
 ar_readdir( const char *path, void *buf, fuse_fill_dir_t filler,
 		off_t offset, struct fuse_file_info *fi )
 {
@@ -2269,7 +2437,7 @@ static struct fuse_operations ar_oper = {
 	.write		= ar_write,
 	.statfs		= ar_statfs,
 	//.flush          = ar_flush,  // int(*flush )(const char *, struct fuse_file_info *)
-	.release	= ar_release,
+	.release	= ar_release, // close(fd)
 	.fsync		= ar_fsync,
 /*
 #ifdef HAVE_SETXATTR
@@ -2356,6 +2524,7 @@ main( int argc, char **argv )
 
 	/* Initialize the node tree lock */
 	pthread_mutex_init(&lock, NULL);
+	pthread_mutex_init(&fdLock, NULL);
 
 	/* now do the real mount */
 	fuse_ret = fuse_main( args.argc, args.argv, &ar_oper, NULL );
@@ -2372,6 +2541,9 @@ main( int argc, char **argv )
 
 	/* clean up */
 	close( archiveFd );
+
+	pthread_mutex_destroy(&fdLock);
+	pthread_mutex_destroy(&lock);
 
 	return EXIT_SUCCESS;
 }
