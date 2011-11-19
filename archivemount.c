@@ -584,6 +584,8 @@ rename_recursively( NODE *start, const char *from, const char *to )
 		if( node->child ) {
 			/* recurse */
 			ret = rename_recursively( node->child, from, to );
+			if (ret)
+				return ret;
 		}
 		/* change node name */
 		individualName = node->name + strlen( from );
@@ -687,7 +689,7 @@ write_new_modded_file( NODE *node, struct archive_entry *wentry,
 		int fh = 0;
 		off_t offset = 0;
 		void *buf;
-		ssize_t len;
+		ssize_t len = -1;
 		/* copy stat info */
 		if( lstat( node->location, &st ) != 0 ) {
 			log( "Could not lstat temporary file %s: %s",
@@ -1250,9 +1252,15 @@ _ar_read( const char *path, char *buf, size_t size, off_t offset,
 		data->uncompress_off = 0;
 
 		ret = open_archive(data);
+		if (!ret) {
+			log( "open_archive failed" );
+			// TODO Should we do something more to invalidate this filehandle?
+			return -1;
+		}
 	}
 
 	if (offset > data->uncompress_off) {
+		// Skip over offset - data->uncompress_off bytes.
 
 		log( "ar_read path: '%s' offset: %d forward", path, offset );
 
@@ -2224,7 +2232,12 @@ ar_rename( const char *from, const char *to )
 		/* it is a directory, recursive change of all nodes
 		 * below it is required */
 		ret = rename_recursively( node->child, from, to );
+		if(ret) {
+			pthread_mutex_unlock( &lock );
+			return ret;
+		}
 	}
+
 	/* meta data is changed in save() */
 	/* change node name */
 	if( *to != '/' ) {
@@ -2545,7 +2558,7 @@ main( int argc, char **argv )
 	pthread_mutex_destroy(&fdLock);
 	pthread_mutex_destroy(&lock);
 
-	return EXIT_SUCCESS;
+	return fuse_ret;
 }
 
 /*
