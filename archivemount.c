@@ -1163,10 +1163,7 @@ _ar_open( const char *path, struct fuse_file_info *fi )
 		close( fh );
 #endif
 	} else {
-		struct archive_entry *entry;
 		struct client_data *data;
-		int archive_ret;
-		const char *realpath;
 
 		data = malloc(sizeof(struct client_data));
 		if (data == NULL) {
@@ -1234,8 +1231,6 @@ _ar_read( const char *path, char *buf, size_t size, off_t offset,
 		struct fuse_file_info *fi )
 {
 	int ret = -1;
-	const char *realpath;
-	NODE *node;
 	struct client_data * data = (struct client_data *)fi->fh; // TODO
 
 	log( "ar_read path: '%s' offset: %d", path, offset );
