@@ -373,9 +373,9 @@ build_tree( const char *mtpt )
 	/* check if format or compression prohibits writability */
 	format = archive_format( archive );
 	compression = archive_compression( archive );
-	if( format & ARCHIVE_FORMAT_ISO9660
-			|| format & ARCHIVE_FORMAT_ISO9660_ROCKRIDGE
-			|| format & ARCHIVE_FORMAT_ZIP
+	if( (format & ARCHIVE_FORMAT_ISO9660)
+			|| (format & ARCHIVE_FORMAT_ISO9660_ROCKRIDGE)
+			|| (format & ARCHIVE_FORMAT_ZIP)
 			|| compression == ARCHIVE_COMPRESSION_COMPRESS )
 	{
 		archiveWriteable = 0;
@@ -839,14 +839,14 @@ save( const char *archiveFile )
 		return -ENOTSUP;
 	}
 #endif
-	if( format & ARCHIVE_FORMAT_CPIO
-			|| format & ARCHIVE_FORMAT_CPIO_POSIX )
+	if( (format & ARCHIVE_FORMAT_CPIO)
+			|| (format & ARCHIVE_FORMAT_CPIO_POSIX) )
 	{
 		archive_write_set_format_cpio( newarc );
 		//log( "set write format to posix-cpio" );
-	} else if( format & ARCHIVE_FORMAT_SHAR
-			|| format & ARCHIVE_FORMAT_SHAR_BASE
-			|| format & ARCHIVE_FORMAT_SHAR_DUMP )
+	} else if( (format & ARCHIVE_FORMAT_SHAR)
+			|| (format & ARCHIVE_FORMAT_SHAR_BASE)
+			|| (format & ARCHIVE_FORMAT_SHAR_DUMP) )
 	{
 		archive_write_set_format_shar( newarc );
 		//log( "set write format to binary shar" );
@@ -858,9 +858,9 @@ save( const char *archiveFile )
 	{
 		archive_write_set_format_pax( newarc );
 		//log( "set write format to binary pax interchange" );
-	} else if( format & ARCHIVE_FORMAT_TAR_USTAR
-			|| format & ARCHIVE_FORMAT_TAR
-			|| format & ARCHIVE_FORMAT_TAR_GNUTAR
+	} else if( (format & ARCHIVE_FORMAT_TAR_USTAR)
+			|| (format & ARCHIVE_FORMAT_TAR)
+			|| (format & ARCHIVE_FORMAT_TAR_GNUTAR)
 			|| format == 0 )
 	{
 		archive_write_set_format_ustar( newarc );
