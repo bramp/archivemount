@@ -1044,7 +1044,7 @@ fd_read_callback(struct archive * archive, void * _data, const void **_buffer) {
 static off_t
 fd_skip_callback(struct archive * archive, void * _data, off_t request) {
 	struct client_data * data = _data;
-	data->compress_off += request; //11%
+	data->compress_off += request;
 	return request;
 }
 
@@ -1092,16 +1092,15 @@ open_archive(struct client_data *data) {
 		return -EIO;
 	}
 
-	//realpath = archive_entry_pathname( node->entry );
 	/* search for file to read */
-	while( ( ret = archive_read_next_header( //22% (40%)
-			data->archive, &entry )) == ARCHIVE_OK ) { // 4%
+	while( ( ret = archive_read_next_header(
+			data->archive, &entry )) == ARCHIVE_OK ) {
 		const char *name;
-		name = archive_entry_pathname( entry ); //9% (15%)
-		if( strcmp( data->path, name ) == 0 ) { // 4%
+		name = archive_entry_pathname( entry );
+		if( strcmp( data->path, name ) == 0 ) {
 			return 0;
 		}
-		archive_read_data_skip( data->archive ); // 3% (33%)
+		archive_read_data_skip( data->archive );
 	}
 
 	/* We should not be able to get here */
