@@ -2555,6 +2555,13 @@ main( int argc, char **argv )
 		exit( EXIT_FAILURE );
 	}
 
+
+	/* Initialize the node tree lock */
+	pthread_mutex_init(&lock, NULL);
+	pthread_mutex_init(&fdLock, NULL);
+
+	LOCK(fdLock);
+
 	if( !options.readonly ) {
 		/* check if archive is writeable */
 		archiveFd = open( archiveFile, O_RDWR );
@@ -2571,12 +2578,10 @@ main( int argc, char **argv )
 	}
 	build_tree( mtpt );
 
+	UNLOCK(fdLock);
+
 	/* save directory this was started from */
 	oldpwd = open( ".", 0 );
-
-	/* Initialize the node tree lock */
-	pthread_mutex_init(&lock, NULL);
-	pthread_mutex_init(&fdLock, NULL);
 
 	/* now do the real mount */
 	fuse_ret = fuse_main( args.argc, args.argv, &ar_oper, NULL );
@@ -2590,6 +2595,8 @@ main( int argc, char **argv )
 			fprintf( stderr, "Saving new archive failed\n" );
 		}
 	}
+
+	LOCK(fdLock);
 
 	/* clean up */
 	close( archiveFd );
