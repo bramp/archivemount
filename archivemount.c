@@ -114,16 +114,19 @@ static struct fuse_opt ar_opts[] =
  /* globals */
 /***********/
 
-static NODE *root;                /* [g] root node                        */
-static int archiveFd;             /* [a] file descriptor of archive file. */
-static int archiveModified = 0;   /* [g] has this archived been modified? */
+#define GUARDED_BY(x)          __attribute__ ((guarded_by(x)))
+#define GUARDED_VAR            __attribute__ ((guarded))
+
+static NODE *root          GUARDED_BY(lock);     /* root node                        */
+static int archiveFd       GUARDED_BY(fdLock);   /* file descriptor of archive file. */
+static int archiveModified GUARDED_BY(lock) = 0; /* has this archived been modified? */
 static int archiveWriteable = 0;  /*     is this archived writable?       */
 struct options options;           /*     fuse options                     */
 char *mtpt = NULL;                /*     mount point                      */
 char *archiveFile = NULL;         /*     archive filename (that is open)  */
 
-pthread_mutex_t lock;   /* [g]lobal node tree lock */
-pthread_mutex_t fdLock; /* [a]rchiveFd lock */
+pthread_mutex_t lock;   /* global node tree lock */
+pthread_mutex_t fdLock; /* archiveFd lock */
 
 char trash[MAXBUF]; /* buffer to throw away seek data */
 
