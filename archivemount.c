@@ -125,6 +125,8 @@ char *archiveFile = NULL;         /*     archive filename (that is open)  */
 pthread_mutex_t lock;   /* [g]lobal node tree lock */
 pthread_mutex_t fdLock; /* [a]rchiveFd lock */
 
+char trash[MAXBUF]; /* buffer to throw away seek data */
+
 /* Taken from the GNU under the GPL */
 char *
 strchrnul (const char *s, int c_in)
@@ -1273,11 +1275,6 @@ _ar_read( const char *path, char *buf, size_t size, off_t offset,
 		log( "ar_read path: '%s' offset: %d forward", path, offset );
 
 		//log( "read called, path: '%s'", path );
-		void *trash;
-		if( ( trash = malloc( MAXBUF ) ) == NULL ) {
-			log( "Out of memory" );
-			return -ENOMEM;
-		}
 
 		/* skip diff */
 		while( data->uncompress_off < offset ) {
@@ -1296,7 +1293,6 @@ _ar_read( const char *path, char *buf, size_t size, off_t offset,
 			data->uncompress_off += ret;
 		}
 
-		free( trash );
 		if( data->uncompress_off != offset ) {
 			/* there was an error */
 			return -1;
