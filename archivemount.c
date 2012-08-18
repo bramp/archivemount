@@ -1072,6 +1072,8 @@ open_archive(struct client_data *data) {
 	int ret;
 	struct archive_entry *entry;
 
+	log("open_archive");
+
 	/* search file in archive */
 	if( (data->archive = archive_read_new()) == NULL ) {
 		log( "Out of memory" );
@@ -1115,6 +1117,7 @@ open_archive(struct client_data *data) {
 
 	/* We should not be able to get here */
 	assert(0);
+	log( "failed to find path '%s'\n", data->path );
 	return -EIO;
 }
 
@@ -1127,8 +1130,6 @@ _ar_open( const char *path, struct fuse_file_info *fi )
 {
 	NODE *node;
 	int ret = 0;
-
-	log( "ar_open path: '%s'", path );
 
 	node = get_node_for_path( root, path );
 	if( ! node ) {
@@ -1209,6 +1210,9 @@ ar_open( const char *path, struct fuse_file_info *fi ) {
 	}
 	return ret;
 	*/
+
+	log( "ar_open path: '%s'", path );
+
 	return _ar_open( path, fi );
 }
 
@@ -1220,6 +1224,8 @@ ar_release( const char *path, struct fuse_file_info *fi )
 {
 	struct client_data * data = (struct client_data *)fi->fh;
 	( void )path;
+
+	log("ar_release '%s'", path);
 
 	fi->fh = 0;
 
@@ -1242,8 +1248,6 @@ _ar_read( const char *path, char *buf, size_t size, off_t offset,
 {
 	int ret = -1;
 	struct client_data * data = (struct client_data *)fi->fh; // TODO
-
-	log( "ar_read path: '%s' offset: %d", path, offset );
 
 	if (offset < data->uncompress_off) {
 
@@ -1330,6 +1334,8 @@ ar_read( const char *path, char *buf, size_t size, off_t offset,
 	struct client_data * data = (struct client_data *)fi->fh; // TODO
 	int ret;
 
+	log( "ar_read path: '%s' offset: %d", path, offset );
+
 	LOCK(data->lock);
 	ret = _ar_read(path, buf, size, offset, fi);
 	UNLOCK(data->lock);
@@ -1342,7 +1348,6 @@ _ar_getattr( const char *path, struct stat *stbuf )
 	NODE *node;
 	int ret;
 
-	//log( "getattr called, path: '%s'", path );
 	node = get_node_for_path( root, path );
 	if( ! node ) {
 		return -ENOENT;
@@ -1368,6 +1373,8 @@ _ar_getattr( const char *path, struct stat *stbuf )
 static int
 ar_getattr( const char *path, struct stat *stbuf )
 {
+	log( "ar_getattr, path: '%s'", path );
+
 	int ret = pthread_mutex_lock(&lock);
 	if ( ret ) {
 		log( "failed to get lock: %s\n", strerror(ret));
@@ -1389,7 +1396,7 @@ ar_mkdir( const char *path, mode_t mode )
 	char *location;
 	int tmp;
 
-	//log( "mkdir called, path '%s', mode %o", path, mode );
+	log( "ar_mkdir called, path '%s', mode %o", path, mode );
 	if( ! archiveWriteable || options.readonly ) {
 		return -EROFS;
 	}
@@ -1466,7 +1473,7 @@ ar_rmdir( const char *path )
 {
 	NODE *node;
 
-	//log( "rmdir called, path '%s'", path );
+	log( "ar_rmdir called, path '%s'", path );
 	if( ! archiveWriteable || options.readonly ) {
 		return -EROFS;
 	}
@@ -1515,7 +1522,8 @@ ar_symlink( const char *from, const char *to )
 	struct group *grp;
 
 	return -ENOSYS; /* somehow saving symlinks does not work. The code below is ok.. see write_new_modded_file() */
-	//log( "symlink called, %s -> %s", from, to );
+
+	log( "ar_symlink called, %s -> %s", from, to );
 	if( ! archiveWriteable || options.readonly ) {
 		return -EROFS;
 	}
@@ -1615,7 +1623,7 @@ ar_link( const char *from, const char *to )
 	struct passwd *pwd;
 	struct group *grp;
 
-	//log( "hardlink called, %s -> %s", from, to );
+	log( "ar_link called, %s -> %s", from, to );
 	if( ! archiveWriteable || options.readonly ) {
 		return -EROFS;
 	}
@@ -1827,6 +1835,9 @@ static int
 ar_truncate( const char *path, off_t size )
 {
 	int ret;
+
+	log("ar_truncate");
+
 	pthread_mutex_lock( &lock );
 	ret = _ar_truncate( path, size );
 	pthread_mutex_unlock( &lock );
@@ -1962,6 +1973,9 @@ ar_write( const char *path, const char *buf, size_t size,
 		off_t offset, struct fuse_file_info *fi )
 {
 	int ret;
+
+	log("ar_write");
+
 	pthread_mutex_lock(&lock);
 	ret = _ar_write( path, buf, size, offset, fi );
 	pthread_mutex_unlock(&lock);
@@ -1975,7 +1989,8 @@ ar_mknod( const char *path, mode_t mode, dev_t rdev )
 	char *location;
 	int tmp;
 
-	//log( "mknod called, path %s", path );
+	log( "mknod called, path %s", path );
+
 	if( ! archiveWriteable || options.readonly ) {
 		return -EROFS;
 	}
@@ -2048,6 +2063,8 @@ ar_unlink( const char *path )
 {
 	NODE *node;
 
+	log("ar_unlink");
+
 	//log( "unlink called, %s", path );
 	if( ! archiveWriteable || options.readonly ) {
 		return -EROFS;
@@ -2114,6 +2131,9 @@ static int
 ar_chmod( const char *path, mode_t mode )
 {
 	int ret;
+
+	log("ar_chmod");
+
 	pthread_mutex_lock( &lock );
 	ret = _ar_chmod( path, mode );
 	pthread_mutex_unlock( &lock );
@@ -2149,6 +2169,9 @@ static int
 ar_chown( const char *path, uid_t uid, gid_t gid )
 {
 	int ret;
+
+	log("ar_chown");
+
 	pthread_mutex_lock( &lock );
 	ret = _ar_chown( path, uid, gid );
 	pthread_mutex_unlock( &lock );
@@ -2185,6 +2208,8 @@ _ar_utime( const char *path, struct utimbuf *buf )
 static int
 ar_utime( const char *path, struct utimbuf *buf )
 {
+	log("ar_utime");
+
 	int ret;
 	pthread_mutex_lock( &lock );
 	ret = _ar_utime( path, buf );
@@ -2196,6 +2221,8 @@ static int
 ar_statfs( const char *path, struct statvfs *stbuf )
 {
   	( void )path;
+
+	log("ar_statfs");
 
 	//log( "statfs called, %s", path );
 
@@ -2221,6 +2248,8 @@ ar_rename( const char *from, const char *to )
 	int ret = 0;
 	char *old_name;
 	char *temp_name;
+
+	log("ar_rename");
 
 	//log( "ar_rename called, from: '%s', to: '%s'", from, to );
 	if( ! archiveWriteable || options.readonly ) {
@@ -2288,6 +2317,8 @@ ar_readlink( const char *path, char *buf, size_t size )
 	NODE *node;
 	const char *tmp;
 
+	log("ar_readline");
+
 	//log( "readlink called, path '%s'", path );
 	int ret = pthread_mutex_lock(&lock);
 	if ( ret ) {
@@ -2317,6 +2348,8 @@ ar_readdir( const char *path, void *buf, fuse_fill_dir_t filler,
 	NODE *node;
 	(void) offset;
 	(void) fi;
+
+	log("ar_readdir");
 
 	//log( "readdir called, path: '%s' offset: %d", path, offset );
 	int ret = -EIO;
@@ -2363,6 +2396,8 @@ ar_create( const char *path, mode_t mode, struct fuse_file_info *fi )
 	NODE *node;
 	char *location;
 	int tmp;
+
+	log("ar_create");
 
 	/* the implementation of this function is mostly copy-paste from
 	   mknod, with the exception that the temp file is created with
