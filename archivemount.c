@@ -987,12 +987,22 @@ struct client_data {
 	char buf[MAXBUF];
 };
 
+/*
 #define LOCK(lock) do { \
 	int ret; \
 	struct timespec abstime; \
 	clock_gettime(CLOCK_REALTIME, &abstime); \
 	abstime.tv_sec += 10; \
 	if ( (ret = pthread_mutex_timedlock(&lock, &abstime)) != 0 ) { \
+		log( "failed to get lock: %s\n", strerror(ret)); \
+		return -1; \
+	} \
+} while (0)
+*/
+
+#define LOCK(lock) do { \
+	int ret; \
+	if ( (ret = pthread_mutex_lock(&lock)) != 0 ) { \
 		log( "failed to get lock: %s\n", strerror(ret)); \
 		return -1; \
 	} \
