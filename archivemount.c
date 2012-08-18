@@ -1260,7 +1260,7 @@ _ar_read( const char *path, char *buf, size_t size, off_t offset,
 		data->uncompress_off = 0;
 
 		ret = open_archive(data);
-		if (!ret) {
+		if (ret) {
 			log( "open_archive failed" );
 			// TODO Should we do something more to invalidate this filehandle?
 			return -1;
