@@ -50,6 +50,6 @@ if test "$debug_on" = "no"; then
         AC_DEFINE([NDEBUG],, [Define to drop debug support])
 fi
 AM_CONDITIONAL(DEBUG, test "$debug_on" = yes)
+AM_PROG_CC_C_O
 
 AC_OUTPUT
-
